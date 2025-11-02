@@ -1,0 +1,1443 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Le Portail Magique de la Petite Souris 🖱️</title>
+    <!-- Chargement de Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Configuration de la police Inter -->
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fc;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .story-box {
+            min-height: 150px;
+        }
+        .lds-dual-ring {
+            display: inline-block;
+            width: 15px;
+            height: 15px;
+        }
+        .lds-dual-ring:after {
+            content: " ";
+            display: block;
+            width: 12px;
+            height: 12px;
+            margin: 1px;
+            border-radius: 50%;
+            border: 2px solid #fff;
+            border-color: #fff transparent #fff transparent;
+            animation: lds-dual-ring 1.2s linear infinite;
+        }
+        @keyframes lds-dual-ring {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+        
+        /* Styles spécifiques au jeu de calcul */
+        .calculator-btn {
+            @apply px-4 py-3 bg-pink-200 text-pink-800 font-bold rounded-xl shadow-md hover:bg-pink-300 transition transform hover:scale-[1.05];
+        }
+
+        /* Styles spécifiques au jeu d'attrape-dent */
+        #catch-canvas {
+             background-color: #e0f7fa; /* Bleu Ciel */
+             border-radius: 12px;
+             box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+
+        /* Styles pour le feedback de la caméra */
+        #camera-status {
+             min-height: 30px;
+        }
+        
+    </style>
+</head>
+<body>
+
+<div id="app" class="w-full max-w-lg p-6 sm:p-8 bg-white rounded-3xl shadow-2xl border border-pink-200 transform transition duration-500 ease-in-out">
+    <!-- Le contenu de l'application sera injecté ici par JavaScript -->
+</div>
+
+<!-- Boîte d'alerte universelle -->
+<div id="alert-box" class="fixed bottom-4 right-4 p-3 rounded-xl text-sm font-medium transition-all duration-500 opacity-0 transform translate-y-2 z-50"></div>
+
+<script>
+    // --- Configuration Magique ---
+    const RECOMPENSE_MONTANT = 10;
+    const RECOMPENSE_BASE = 5;
+    const RECOMPENSE_BONUS = 5;
+    const TEMPS_ATTENTE_LIVRAISON_SECONDES = 300; // 5 minutes
+    const TEMPS_ATTENTE_BANQUE_SECONDES = 600; // 10 minutes
+    const TEMPS_VERIF_OEIL_MS = 10000; // 10 secondes pour la vérification de l'oeil
+
+    // Critères d'identification (Nélia Samri, 14 Septembre 2018, 77500)
+    const NOM_TEST = "Nélia Samri"; 
+    const DOB_EXPECTED = "2018-09-14"; 
+    const POSTAL_CODE_EXPECTED = "77500"; 
+    
+    // Configuration TTS
+    const TTS_API_MODEL = "gemini-2.5-flash-preview-tts";
+    const TTS_VOICE = "Achird"; // Voix douce et amicale (Achird est 'Friendly')
+
+    // 🔑 CLÉ API IMPORTANTE : 
+    // Votre clé API fournie a été insérée ici. Cela résoudra l'erreur de connexion sur Netlify !
+    const apiKey = "AIzaSyBxYegmoC88aykxvDVe96dbnJdMJcMwK4Eb"; 
+    
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+    // --- Variables d'État de l'Application ---
+    let currentPage = 'login'; 
+    let userName = '';
+    let userChoice = ''; 
+    let transactionCode = '';
+    let remainingTime = 0; 
+    let waitingTimeTotal = 0; 
+    let countdownInterval = null;
+    let generatedStory = "Appuyez sur le bouton pour découvrir une longue et douce histoire de la Petite Souris !";
+    let isGenerating = false;
+    let selectedGame = 'story'; 
+    
+    // --- Variables pour la Détection Oculaire ---
+    let cameraStatus = 'INITIAL'; // INITIAL, LOADING, ACTIVE, ERROR, NOT_SUPPORTED
+    let cameraErrorMessage = '';
+    let eyeCheckValidated = false;
+    let isEyeCheckRunning = false;
+    let videoStream = null;
+    let detectionInterval = null; 
+    let eyeCheckRemainingTime = 0; 
+
+    let audioPlayer = null; 
+    let isAudioPlaying = false; 
+
+    // --- Variables pour le Jeu de Calcul ---
+    let num1 = 0;
+    let num2 = 0;
+    let operator = '+';
+    let correctAnswer = 0;
+    let currentInput = '';
+    let calcScore = 0;
+    
+    // --- Variables pour le Jeu d'Attrape-Dent ---
+    let canvas, ctx, player, items, score;
+    let gameAnimation;
+    let isGameRunning = false; 
+
+    const appElement = document.getElementById('app');
+    const videoElementRef = { current: null }; 
+
+    // Génère un code de transaction unique
+    const generateCode = (name) => {
+        const seed = name.toLowerCase().replace(/\s/g, '') + Date.now();
+        let hash = 0;
+        for (let i = 0; i < seed.length; i++) {
+            hash = seed.charCodeAt(i) + ((hash << 5) - hash);
+        }
+        const shortId = Math.abs(hash).toString(36).toUpperCase();
+        return `SOURIS-${shortId.substring(0, 6)}`;
+    };
+    
+    // --- LOGIQUE CAMÉRA & DÉTECTION OCULAIRE ---
+    function stopEyeCheckTimer() {
+         if (detectionInterval) {
+            clearInterval(detectionInterval);
+            detectionInterval = null;
+        }
+        isEyeCheckRunning = false;
+    }
+    
+    function stopCamera() {
+        stopEyeCheckTimer(); 
+        if (videoStream) {
+            videoStream.getTracks().forEach(track => track.stop());
+            videoStream = null;
+        }
+        cameraStatus = 'INITIAL';
+        eyeCheckRemainingTime = 0;
+        const videoEl = document.getElementById('video-preview');
+        if(videoEl) videoEl.style.display = 'none';
+    }
+
+    async function setupCamera() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            cameraStatus = 'NOT_SUPPORTED';
+            cameraErrorMessage = "Votre navigateur ne supporte pas l'accès à la caméra.";
+            render(); 
+            return;
+        }
+
+        cameraStatus = 'LOADING';
+        render();
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            videoStream = stream;
+            cameraStatus = 'ACTIVE';
+            
+            const videoEl = document.getElementById('video-preview');
+            if (videoEl) {
+                videoEl.srcObject = stream;
+                videoEl.play();
+                videoEl.style.display = 'block'; 
+                startDetectionSimulation();
+            }
+        } catch (err) {
+            console.error("Erreur d'accès à la caméra:", err);
+            cameraStatus = 'ERROR';
+            if (err.name === 'NotAllowedError') {
+                cameraErrorMessage = "Accès à la caméra refusé. Veuillez autoriser l'accès.";
+            } else if (err.name === 'NotFoundError') {
+                cameraErrorMessage = "Aucune caméra détectée.";
+            } else {
+                cameraErrorMessage = `Erreur: ${err.message}`;
+            }
+            render();
+        }
+    }
+    
+    function startDetectionSimulation() {
+        stopEyeCheckTimer(); 
+        
+        isEyeCheckRunning = true;
+        eyeCheckValidated = false;
+        eyeCheckRemainingTime = TEMPS_VERIF_OEIL_MS / 1000; 
+
+        render(); 
+
+        detectionInterval = setInterval(() => {
+            eyeCheckRemainingTime--;
+
+            if (eyeCheckRemainingTime <= 0) {
+                stopEyeCheckTimer();
+                eyeCheckValidated = true;
+                stopCamera(); 
+                alertMessage("Vérification oculaire autorisée ! ✅", 'green');
+                render(); // Re-render pour passer à l'étape suivante
+            }
+            render(); 
+        }, 1000); 
+    }
+
+    // --- Fonctions de Navigation et de Logique ---
+
+    function handleLogin() {
+        const nameInput = document.getElementById('name-input').value.trim();
+        const dobInput = document.getElementById('dob-input').value;
+        const postalInput = document.getElementById('postal-input').value.trim();
+
+        if (nameInput.length < 5 || !dobInput || postalInput.length !== 5) {
+            alertMessage("Veuillez remplir correctement les 3 champs.", 'red');
+            return;
+        }
+        const formattedDOB = new Date(dobInput).toISOString().substring(0, 10);
+        
+        // Logique de vérification inversée
+        const testNameNormalized = NOM_TEST.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); 
+        const inputNameNormalized = nameInput.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); 
+
+        let nameMatch = (inputNameNormalized === testNameNormalized);
+        if (!nameMatch) {
+             const parts = testNameNormalized.split(' ').filter(p => p);
+             if (parts.length === 2) {
+                 const invertedTestName = `${parts[1]} ${parts[0]}`; 
+                 if (inputNameNormalized === invertedTestName) {
+                     nameMatch = true;
+                 }
+             }
+        }
+
+        if (!nameMatch || formattedDOB !== DOB_EXPECTED || postalInput !== POSTAL_CODE_EXPECTED) {
+            alertMessage("Attention : Un élément d'identification ne correspond pas aux registres de la Petite Souris. Veuillez vérifier.", 'red');
+            return;
+        }
+
+        userName = nameInput;
+        transactionCode = generateCode(userName);
+        currentPage = 'eye_check';
+        render();
+    }
+    
+    function startEyeCheckProcess() {
+        if (isEyeCheckRunning || eyeCheckValidated) return;
+        setupCamera(); 
+    }
+    
+    function goToCode() {
+        if (!eyeCheckValidated) return;
+        stopCamera(); 
+        currentPage = 'code';
+        render();
+    }
+    
+    function goToOptions() {
+        currentPage = 'options';
+        render();
+    }
+    
+    function goToInstructions() {
+        currentPage = 'instructions';
+        render();
+    }
+
+    // Fonctions de jeu et d'audio 
+    function alertMessage(message, color) {
+        const alertBox = document.getElementById('alert-box');
+        if (!alertBox) return;
+
+        alertBox.textContent = message;
+        alertBox.className = `fixed bottom-4 right-4 p-3 rounded-xl text-sm font-medium transition-all duration-500 transform translate-y-0 opacity-100 ${color === 'red' ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'} shadow-lg`;
+        
+        setTimeout(() => {
+            alertBox.classList.add('opacity-0');
+            alertBox.classList.remove('translate-y-0');
+            alertBox.classList.add('translate-y-2');
+        }, 4000);
+    }
+
+    // --- LOGIQUE TTS ET HISTOIRES ---
+    function base64ToArrayBuffer(base64) {
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+            bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes.buffer;
+    }
+
+    function pcmToWav(pcm16, sampleRate) {
+        // Le fichier WAV est de type little-endian
+        const buffer = new ArrayBuffer(44 + pcm16.byteLength);
+        const view = new DataView(buffer);
+        
+        const writeString = (view, offset, string) => {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        };
+
+        let offset = 0;
+        // RIFF chunk descriptor
+        writeString(view, offset, 'RIFF'); offset += 4;
+        view.setUint32(offset, 36 + pcm16.byteLength, true); offset += 4; // ChunkSize
+        writeString(view, offset, 'WAVE'); offset += 4;
+
+        // "fmt " sub-chunk
+        writeString(view, offset, 'fmt '); offset += 4;
+        view.setUint32(offset, 16, true); offset += 4;         // Subchunk1Size (16 for PCM)
+        view.setUint16(offset, 1, true); offset += 2;          // AudioFormat (1 for PCM)
+        view.setUint16(offset, 1, true); offset += 2;          // NumChannels (1 for Mono)
+        view.setUint32(offset, sampleRate, true); offset += 4; // SampleRate
+        view.setUint32(offset, sampleRate * 1 * 2, true); offset += 4; // ByteRate (SampleRate * NumChannels * BitsPerSample/8)
+        view.setUint16(offset, 1 * 2, true); offset += 2;      // BlockAlign (NumChannels * BitsPerSample/8)
+        view.setUint16(offset, 16, true); offset += 2;         // BitsPerSample (16-bit)
+
+        // "data" sub-chunk
+        writeString(view, offset, 'data'); offset += 4;
+        view.setUint32(offset, pcm16.byteLength, true); offset += 4; // Subchunk2Size
+        
+        // Copie des données PCM
+        const dataBytes = new Uint8Array(pcm16.buffer);
+        for(let i = 0; i < pcm16.byteLength; i++) {
+            view.setUint8(offset + i, dataBytes[i]); 
+        }
+
+        return new Blob([view], { type: 'audio/wav' });
+    }
+    
+    async function fetchWithBackoff(url, options, maxRetries = 5) {
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                const response = await fetch(url, options);
+                if (!response.ok) {
+                    // Si l'API renvoie une 4xx ou 5xx, on lance l'erreur immédiatement.
+                    const errorText = await response.text();
+                    console.error(`API Call Failed (Status: ${response.status}, Attempt: ${attempt + 1}): ${errorText}`);
+                    
+                    // Si le statut est une erreur client ou serveur définitive, on ne réessaye pas
+                    if (response.status >= 400 && response.status < 500) {
+                        throw new Error("Erreur d'authentification ou requête invalide. Vérifiez la clé API.");
+                    }
+                    if (response.status >= 500 && response.status < 600) {
+                        throw new Error(`Erreur serveur! status: ${response.status}`);
+                    }
+                    // Si ce n'est pas un code standard on continue avec l'erreur HTTP
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response;
+            } catch (error) {
+                // Si c'est une erreur définitive (comme celle lancée ci-dessus), on la propage
+                if (error.message.includes("Erreur d'authentification") || error.message.includes("Erreur serveur")) {
+                    throw error;
+                }
+                if (attempt === maxRetries - 1) throw error;
+                const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+        }
+    }
+    
+    async function generateStoryText() {
+        // Le ton du System Prompt assure la "petite voix de souris" (doux et réconfortant)
+        const systemPrompt = "Tu es une Petite Souris conteuse, avec une voix douce et réconfortante. Rédige une longue et belle histoire (environ 350 mots) pour une petite fille. L'histoire doit se concentrer sur les origines magiques de la Petite Souris, son clan, combien ils sont (un grand clan secret !), comment ils vivent un peu partout dans le monde pour collecter les dents de lait, et ce qu'ils font après. Le ton doit être très amical et rassurant.";
+        const userQuery = `Raconte une histoire sur le clan de la Petite Souris à ${userName || 'l\'enfant'}.`;
+
+        const payload = {
+            contents: [{ parts: [{ text: userQuery }] }],
+            systemInstruction: { parts: [{ text: systemPrompt }] },
+            config: { maxOutputTokens: 1000 }
+        };
+
+        try {
+            const response = await fetchWithBackoff(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            return result.candidates?.[0]?.content?.parts?.[0]?.text || "Oups ! La magie a eu un petit hoquet lors de la rédaction du script. Veuillez réessayer.";
+        } catch (error) {
+            console.error("Gemini Story Generation Error:", error);
+            if (error.message.includes("Vérifiez la clé API")) {
+                 return "Erreur de connexion magique : Le portail est fermé. (Veuillez vérifier votre Clé API !)";
+            }
+            return "Erreur de connexion magique. Le ciel est brumeux. Réessayez !";
+        }
+    }
+
+    async function getAndNarrateStory() {
+        if (isGenerating) return;
+        
+        // Vérification de la clé API avant de commencer (moins critique maintenant qu'elle est codée en dur, mais bonne pratique)
+        if (apiKey === "" || apiKey === "VOTRE_CLE_API_GEMINI_ICI") {
+             alertMessage("Erreur: Clé API manquante ou non valide. Veuillez la renseigner dans le code source.", 'red');
+             console.error("Clé API manquante. La génération d'histoire ne fonctionnera pas en dehors de l'environnement Canvas.");
+             return;
+        }
+
+        // Arrêter l'audio en cours avant de commencer une nouvelle génération
+        if (audioPlayer && isAudioPlaying) {
+            audioPlayer.pause();
+        }
+
+        isGenerating = true;
+        generatedStory = "<div class='text-center text-gray-500'>🐭 La Petite Souris écrit le script...</div>";
+        renderGameArea(); // Mettre à jour l'affichage avec l'état de chargement
+        
+        // 1. GÉNÉRER LE TEXTE D'ABORD
+        const textScript = await generateStoryText();
+        
+        // Si la génération de texte a échoué (et a renvoyé un message d'erreur), on s'arrête là
+        if (textScript.includes("Erreur de connexion magique")) {
+             isGenerating = false;
+             generatedStory = `<div class='text-center text-red-600 font-bold'>${textScript.replace(/\n/g, '<br>')}</div>`;
+             renderGameArea();
+             return;
+        }
+
+
+        // 2. METTRE À JOUR L'INTERFACE AVEC LE TEXTE IMMÉDIATEMENT
+        // C'est l'amélioration pour le temps de chargement
+        generatedStory = `<div class='text-center text-pink-600 font-bold'>✨ L'audio est en cours de création... (Lecture du texte possible)</div>
+                          <div class="mt-4 text-sm italic text-gray-700">${textScript.replace(/\n/g, '<br>')}</div>`;
+        renderGameArea();
+
+        // 3. LANCER LA GÉNÉRATION DE L'AUDIO (asynchrone)
+        const payload = {
+            contents: [{ parts: [{ text: textScript }] }],
+            generationConfig: {
+                responseModalities: ["AUDIO"],
+                speechConfig: {
+                    voiceConfig: {
+                        prebuiltVoiceConfig: { voiceName: TTS_VOICE }
+                    }
+                }
+            },
+            model: TTS_API_MODEL
+        };
+        
+        const ttsApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${TTS_API_MODEL}:generateContent?key=${apiKey}`;
+
+        try {
+            const response = await fetchWithBackoff(ttsApiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            
+            const part = result?.candidates?.[0]?.content?.parts?.[0];
+            const audioData = part?.inlineData?.data;
+            const mimeType = part?.inlineData?.mimeType; 
+
+            if (audioData && mimeType && mimeType.startsWith("audio/L16")) {
+                const sampleRateMatch = mimeType.match(/rate=(\d+)/);
+                const sampleRate = sampleRateMatch ? parseInt(sampleRateMatch[1], 10) : 24000;
+                
+                const pcmDataBuffer = base64ToArrayBuffer(audioData);
+                const pcm16 = new Int16Array(pcmDataBuffer);
+                const wavBlob = pcmToWav(pcm16, sampleRate);
+                
+                const audioUrl = URL.createObjectURL(wavBlob);
+                
+                if (audioPlayer && audioPlayer.src) {
+                    URL.revokeObjectURL(audioPlayer.src);
+                }
+                audioPlayer = new Audio(audioUrl);
+                
+                // Lancer l'audio automatiquement
+                audioPlayer.onplay = () => { isAudioPlaying = true; renderGameArea(); };
+                audioPlayer.onended = () => { isAudioPlaying = false; renderGameArea(); };
+                audioPlayer.onpause = () => { isAudioPlaying = false; renderGameArea(); };
+                
+                audioPlayer.play().catch(e => {
+                    console.error("Error playing audio (user interaction required):", e);
+                    alertMessage("Problème pour lancer l'audio. Vérifiez le volume ou essayez un autre bouton d'activité d'abord.", 'red');
+                });
+                
+                generatedStory = textScript; // Le texte final est affiché
+            } else {
+                console.error("TTS Response Error: No valid audio data.", result);
+                alertMessage("Oups ! La souris n'a pas pu parler. Affichage du texte uniquement.", 'red');
+                generatedStory = textScript; // Le texte final est affiché
+            }
+
+        } catch (error) {
+            console.error("Gemini TTS Error:", error);
+            alertMessage("Erreur de connexion magique pour l'audio. Réessayez !", 'red');
+            generatedStory = textScript; // Le texte final est affiché
+        } finally {
+            isGenerating = false;
+            renderGameArea(); 
+        }
+    }
+    
+    function toggleAudioPlayback() {
+        if (isGenerating) return; 
+        
+        // Si l'audio n'est pas initialisé ou a été joué jusqu'à la fin, on regénère / relance
+        if (!audioPlayer || audioPlayer.ended) {
+            getAndNarrateStory();
+            return;
+        }
+
+        if (isAudioPlaying) {
+            audioPlayer.pause();
+        } else {
+            audioPlayer.play().catch(e => {
+                console.error("Error playing audio (user interaction required):", e);
+                alertMessage("Problème pour lancer l'audio. Vérifiez le volume.", 'red');
+            });
+        }
+    }
+    
+    // NOUVELLE FONCTION : Force la régénération de l'histoire et de l'audio
+    function requestNewStory() {
+        if (isGenerating) return;
+
+        // 1. Arrêter et nettoyer l'ancien audio
+        if (audioPlayer && isAudioPlaying) {
+            audioPlayer.pause();
+        }
+        if (audioPlayer && audioPlayer.src) {
+            URL.revokeObjectURL(audioPlayer.src);
+        }
+        audioPlayer = null; 
+        isAudioPlaying = false;
+        
+        // 2. Déclencher la nouvelle génération
+        getAndNarrateStory();
+    }
+
+
+    function startCountdown(time) {
+        waitingTimeTotal = time;
+        remainingTime = time;
+        clearInterval(countdownInterval); 
+        countdownInterval = setInterval(() => {
+            remainingTime--;
+            const timeElement = document.getElementById('countdown-time');
+            if (timeElement) timeElement.textContent = formatTime(remainingTime);
+            
+            if (remainingTime <= 0) {
+                clearInterval(countdownInterval);
+                currentPage = 'result';
+                render();
+            }
+        }, 1000);
+    }
+    
+    function formatTime(seconds) {
+        const min = Math.floor(seconds / 60);
+        const sec = seconds % 60;
+        return `${min}m ${sec.toString().padStart(2, '0')}s`;
+    }
+
+    function handleChoice(choice) {
+        if (choice === 'bank') {
+            userChoice = 'bank'; 
+            currentPage = 'recipient_choice';
+            render();
+        } else {
+            userChoice = 'delivery';
+            currentPage = 'instructions';
+            render(); 
+        }
+    }
+
+    function handleRecipientChoice(recipient) {
+        userChoice = 'bank_' + recipient; 
+        currentPage = 'instructions';
+        render(); 
+    }
+    
+    // --- LOGIQUE JEUX ---
+    
+    function stopActiveGame() {
+        if (window.gameAnimation) {
+            cancelAnimationFrame(window.gameAnimation);
+            window.gameAnimation = null;
+        }
+        isGameRunning = false;
+        
+        // Nettoyer les listeners du canvas si le jeu d'attrape est actif
+        const canvasEl = document.getElementById('catch-canvas');
+        if (canvasEl && window.handleMove) {
+            canvasEl.removeEventListener('mousemove', window.handleMove);
+            canvasEl.removeEventListener('touchmove', window.handleMove);
+            canvasEl.removeEventListener('touchstart', window.handleMove);
+        }
+    }
+
+    function setSelectedGame(game) {
+        stopActiveGame();
+        selectedGame = game;
+        
+        // Après avoir mis à jour l'état, on injecte le contenu et on initialise
+        renderGameArea(); 
+    }
+    
+    function renderGameArea() {
+        const gameArea = document.getElementById('game-area-content');
+        if (!gameArea) return;
+        
+        // 1. Arrêter toute activité précédente sauf l'audio 
+        stopActiveGame(); 
+        
+        // 2. Injecter le HTML correspondant au jeu sélectionné
+        if (selectedGame === 'calc') {
+            gameArea.innerHTML = renderCalcGame();
+            initializeCalcGame(); // Lancer l'initialisation du jeu de calcul
+        } else if (selectedGame === 'catch') {
+            gameArea.innerHTML = `<div class="text-center p-4">
+                                     <h3 class="text-2xl font-bold text-pink-600 mb-4">Jeu d'Attrape-Dent 🦷</h3>
+                                     <canvas id="catch-canvas" width="300" height="300" class="border border-gray-300 rounded-xl mx-auto block"></canvas>
+                                     <p class="text-xs text-gray-500 mt-2">Déplace la souris 🐭 (en bas) avec la souris ou ton doigt pour attraper les dents 🦷.</p>
+                                 </div>`;
+            initializeCatchGame(); // Lancer l'initialisation du jeu d'attrape-dent
+        } else { // 'story'
+            gameArea.innerHTML = getStoryContentHtml();
+        }
+        
+        // Mettre à jour les boutons pour le score de calcul
+        const scoreElement = document.getElementById('calc-score');
+        if (scoreElement) {
+            scoreElement.textContent = `Score : ${calcScore} 💎`;
+        }
+    }
+    
+    function getStoryContentHtml() {
+        let statusText = 'Prêt à écouter. (Cliquez sur le bouton "Lancer l\'histoire")';
+        if (isGenerating) {
+            statusText = 'Écriture et Audio en cours...';
+        } else if (isAudioPlaying) {
+            statusText = 'Écoute en cours...';
+        } else if (audioPlayer && audioPlayer.ended) {
+            statusText = 'Histoire terminée. Lancez une nouvelle histoire ou relisez la même.';
+        } else if (audioPlayer) {
+            statusText = 'Audio en pause.';
+        }
+        
+        return `<div class="p-3">
+            <p class="text-xs text-center text-pink-500 mb-2 font-semibold">
+                ${statusText}
+            </p>
+            <div id="story-display" class="story-box p-3 bg-white rounded-xl shadow-inner text-left text-gray-700 text-sm italic border-l-4 border-pink-400 overflow-y-auto max-h-64">
+                ${generatedStory.replace(/\n/g, '<br>')}
+            </div>
+        </div>`;
+    }
+
+    
+    // --- CALCULATOR GAME LOGIC (Nouveau Jeu) ---
+    function generateProblem() {
+        // Problèmes simples pour niveau primaire (max 20)
+        num1 = Math.floor(Math.random() * 10) + 1;
+        num2 = Math.floor(Math.random() * 10) + 1;
+        
+        // Choisir l'opérateur (+ ou -)
+        operator = Math.random() < 0.5 ? '+' : '-';
+
+        if (operator === '-' && num1 < num2) {
+            // Assurer que le résultat est positif pour le niveau
+            [num1, num2] = [num2, num1];
+        }
+
+        correctAnswer = operator === '+' ? num1 + num2 : num1 - num2;
+        currentInput = '';
+
+        // Mise à jour de l'affichage du problème
+        const problemElement = document.getElementById('calc-problem');
+        if (problemElement) {
+            problemElement.textContent = `${num1} ${operator} ${num2} = ?`;
+        }
+        const inputElement = document.getElementById('calc-input');
+        if (inputElement) {
+            inputElement.textContent = '...';
+        }
+        const scoreElement = document.getElementById('calc-score');
+        if (scoreElement) {
+            scoreElement.textContent = `Score : ${calcScore} 💎`;
+        }
+    }
+    
+    function initializeCalcGame() {
+        // On régénère le problème pour s'assurer que le jeu est prêt
+        generateProblem();
+    }
+
+    function handleCalcInput(value) {
+        if (selectedGame !== 'calc') return;
+
+        if (value === 'C') {
+            currentInput = '';
+        } else if (value === 'DEL') {
+            currentInput = currentInput.slice(0, -1);
+        } else if (value === '=') {
+             // Valide explicitement (pour corriger une erreur sans tout effacer)
+            checkAnswer();
+            return; 
+        } else {
+            if (currentInput.length < 3) {
+                currentInput += value;
+            }
+            
+            // --- NOUVELLE LOGIQUE D'AUTO-VALIDATION (selon demande de Jalil) ---
+            const input = parseInt(currentInput, 10);
+            if (!isNaN(input) && input === correctAnswer) {
+                checkAnswer(); // Auto-valide si l'entrée correspond à la réponse exacte
+                return; 
+            }
+        }
+        
+        const inputElement = document.getElementById('calc-input');
+        if (inputElement) {
+            inputElement.textContent = currentInput || '...';
+        }
+    }
+
+    function checkAnswer() {
+        const input = parseInt(currentInput, 10);
+        
+        // Vérification de base si l'utilisateur appuie sur VALIDEZ sans rien
+        if (currentInput === '') {
+            alertMessage("Veuillez entrer une réponse.", 'red');
+            return;
+        }
+
+        if (input === correctAnswer) {
+            calcScore++;
+            alertMessage("Bonne réponse ! +1 💎", 'green');
+        } else {
+            alertMessage(`Faux ! La réponse était ${correctAnswer}.`, 'red');
+            calcScore = Math.max(0, calcScore - 1);
+        }
+
+        generateProblem(); 
+        renderGameArea(); // Mettre à jour le score et le problème
+    }
+    
+    function renderCalcGame() {
+        window.handleCalcInput = handleCalcInput;
+        
+        // Remplacer '=' par 'VALIDEZ' dans l'interface mais garder la logique du '='
+        const buttons = [
+            '1', '2', '3',
+            '4', '5', '6',
+            '7', '8', '9',
+            'C', '0', '=' // Le '=' sera affiché comme 'Validez'
+        ];
+
+        return `
+            <div class="text-center p-4">
+                <h3 class="text-2xl font-bold text-pink-600 mb-4">Le Trésor de la Souris 🐭</h3>
+                
+                <div id="calc-score" class="text-xl font-bold text-gray-700 mb-4">Score : ${calcScore} 💎</div>
+
+                <div id="calc-problem" class="text-4xl font-extrabold bg-pink-100 p-4 rounded-xl shadow-inner mb-4">
+                    ${num1} ${operator} ${num2} = ?
+                </div>
+                
+                <div class="text-3xl font-bold text-blue-700 p-3 bg-white border border-blue-300 rounded-xl mb-6">
+                    Réponse : <span id="calc-input">${currentInput || '...'}</span>
+                </div>
+
+                <div class="grid grid-cols-3 gap-3 w-full max-w-xs mx-auto">
+                    ${buttons.map(btn => {
+                        let text = btn;
+                        let colorClass = 'bg-pink-200 text-pink-800';
+                        if (btn === '=') {
+                            text = 'VALIDEZ';
+                            colorClass = 'col-span-1 bg-green-500 text-white hover:bg-green-600';
+                        } else if (btn === 'C') {
+                            text = 'C';
+                            colorClass = 'col-span-1 bg-red-400 text-white hover:bg-red-500';
+                        }
+                        
+                        return `
+                            <button onclick="handleCalcInput('${btn}')" class="calculator-btn ${colorClass}">
+                                ${text}
+                            </button>
+                        `;
+                    }).join('')}
+                    <button onclick="handleCalcInput('DEL')" class="calculator-btn bg-gray-400 text-white hover:bg-gray-500 col-span-3">
+                        EFFACER
+                    </button>
+                </div>
+            </div>
+        `;
+    }
+
+    // --- CATCH GAME LOGIC ---
+    
+    function initializeCatchGame() {
+        canvas = document.getElementById('catch-canvas');
+        if (!canvas) {
+            isGameRunning = false;
+            return;
+        }
+        
+        ctx = canvas.getContext('2d');
+        
+        // Assurer que le canvas a les bonnes dimensions pour la zone
+        canvas.width = 300; 
+        canvas.height = 300;
+
+        player = { x: canvas.width / 2 - 20, y: canvas.height - 30, width: 40, height: 20, speed: 5 };
+        items = [];
+        score = 0;
+        isGameOver = false;
+        isGameRunning = true; 
+
+        // Nettoyer les anciens listeners (si la fonction globale est définie)
+        const oldHandleMove = window.handleMove;
+        if (oldHandleMove) {
+            canvas.removeEventListener('mousemove', oldHandleMove);
+            canvas.removeEventListener('touchmove', oldHandleMove);
+            canvas.removeEventListener('touchstart', oldHandleMove);
+        }
+        
+        const handleMove = (e) => {
+            if (!isGameRunning) return;
+
+            let clientX;
+            if (e.touches && e.touches.length > 0) {
+                e.preventDefault();
+                clientX = e.touches[0].clientX;
+            } else {
+                clientX = e.clientX;
+            }
+            
+            const rect = canvas.getBoundingClientRect();
+            const mouseX = clientX - rect.left;
+            
+            player.x = Math.max(0, Math.min(mouseX - player.width / 2, canvas.width - player.width));
+        };
+        
+        // Stocker la fonction pour pouvoir la retirer
+        window.handleMove = handleMove; 
+        
+        canvas.addEventListener('mousemove', window.handleMove);
+        canvas.addEventListener('touchmove', window.handleMove);
+        canvas.addEventListener('touchstart', window.handleMove);
+        
+        // Lancer la boucle de jeu
+        gameLoop();
+    }
+    
+    function drawPlayer() {
+        if (!ctx || !player) return;
+        ctx.fillStyle = '#ff69b4'; 
+        ctx.beginPath();
+        // Dessine la plateforme (corps de la souris)
+        ctx.fillRect(player.x, player.y, player.width, player.height);
+
+        // Dessine les oreilles et le nez (pour la souris)
+        ctx.fillStyle = '#ff69b4';
+        ctx.beginPath();
+        // Oreille gauche
+        ctx.arc(player.x, player.y, 10, 0, Math.PI * 2);
+        // Oreille droite
+        ctx.arc(player.x + player.width, player.y, 10, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.font = '20px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('🐭', player.x + player.width / 2, player.y + player.height / 2 + 3);
+    }
+    
+    function drawItem(item) {
+        if (!ctx) return;
+        ctx.fillStyle = item.color;
+        ctx.beginPath();
+        ctx.arc(item.x, item.y, item.radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = '18px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(item.emoji, item.x, item.y + 2);
+    }
+    
+    function updateGame() {
+        if (!isGameRunning || !canvas) return;
+        
+        for (let i = 0; i < items.length; i++) {
+            items[i].y += items[i].speed;
+
+            // Simple collision check (rectangle du joueur vs cercle de l'objet)
+            if (items[i].y + items[i].radius > player.y && 
+                items[i].x > player.x && 
+                items[i].x < player.x + player.width) {
+                
+                if (items[i].type === 'good') {
+                    score++;
+                } else {
+                    score = Math.max(0, score - 1); 
+                }
+                items.splice(i, 1);
+                i--;
+            } else if (items[i].y > canvas.height) {
+                items.splice(i, 1);
+                i--;
+            }
+        }
+        
+        if (Math.random() < 0.035) { 
+            const type = Math.random() < 0.75 ? 'good' : 'bad'; 
+            items.push({
+                x: Math.random() * (canvas.width - 40) + 20,
+                y: -20,
+                radius: 12,
+                speed: Math.random() * 2 + 1.8, 
+                color: type === 'good' ? '#81c784' : '#ef5350',
+                emoji: type === 'good' ? '🦷' : '🧀', 
+                type: type
+            });
+        }
+    }
+
+    function drawGame() {
+        if (!ctx || !canvas) return;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        ctx.font = '16px Inter';
+        ctx.fillStyle = '#4b5563';
+        ctx.textAlign = 'left';
+        ctx.fillText(`Dents sauvées : ${score}`, 10, 20);
+
+        for (const item of items) {
+            drawItem(item);
+        }
+
+        drawPlayer();
+    }
+
+    function gameLoop() {
+        if (isGameRunning && currentPage === 'activity' && selectedGame === 'catch') {
+            updateGame();
+            drawGame();
+            window.gameAnimation = requestAnimationFrame(gameLoop);
+        } else {
+            stopActiveGame();
+        }
+    }
+
+    // --- Fonctions de Rendu HTML (Mises à jour) ---
+
+    function renderLogin() {
+        stopCamera(); 
+        return `
+            <h1 class="text-3xl font-extrabold text-pink-600 text-center mb-6">
+                Bienvenue au Portail de la Petite Souris 🖱️
+            </h1>
+            <p class="text-center text-gray-600 mb-8">
+                Pour accéder à vos services magiques, veuillez vous identifier.
+            </p>
+
+            <div class="space-y-4">
+                <input type="text" id="name-input" placeholder="Nom Complet de l'enfant" class="w-full p-3 border border-pink-300 rounded-xl focus:ring-pink-500 focus:border-pink-500 transition shadow-sm">
+                <input type="date" id="dob-input" placeholder="Date de Naissance" class="w-full p-3 border border-pink-300 rounded-xl focus:ring-pink-500 focus:border-pink-500 transition shadow-sm">
+                <input type="text" id="postal-input" placeholder="Code Postal du Domicile" class="w-full p-3 border border-pink-300 rounded-xl focus:ring-pink-500 focus:border-pink-500 transition shadow-sm">
+            </div>
+
+            <button onclick="handleLogin()" class="w-full mt-8 py-3 bg-pink-500 text-white font-bold rounded-xl shadow-lg hover:bg-pink-600 transition transform hover:scale-[1.01]">
+                Ouvrir le Portail
+            </button>
+        `;
+    }
+
+    function renderEyeCheck() {
+        const isCameraActive = cameraStatus === 'ACTIVE' && isEyeCheckRunning;
+        const isCameraLoading = cameraStatus === 'LOADING';
+        const isCameraError = cameraStatus === 'ERROR' || cameraStatus === 'NOT_SUPPORTED';
+
+        let validationIcon = eyeCheckValidated ? '✅' : (isCameraActive ? '👁️' : (isCameraLoading ? '<div class="lds-dual-ring"></div>' : '🔒'));
+        let buttonText = eyeCheckValidated ? 'Étape suivante' : (isCameraActive ? 'Analyse en cours...' : (isCameraError ? 'Accès refusé. Retour' : 'Lancer la Vérification Oculaire'));
+        let buttonColor = eyeCheckValidated ? 'bg-green-500 hover:bg-green-600' : (isCameraActive ? 'bg-yellow-500' : (isCameraError ? 'bg-gray-400' : 'bg-pink-500 hover:bg-pink-600'));
+        let buttonAction = eyeCheckValidated ? 'goToCode()' : (isCameraError ? 'currentPage=\'login\'; stopCamera(); render()' : 'startEyeCheckProcess()');
+        let buttonDisabled = isCameraActive || isCameraLoading;
+        
+        const cameraFeedbackText = eyeCheckValidated ? 
+            'AUTORISÉ ✅' : 
+            (isCameraActive ? `👁️ Yeux détectés : Gardez le regard ! (${eyeCheckRemainingTime}s)` : (isCameraLoading ? 'Chargement...' : 'Prêt à vérifier.'));
+
+        return `
+            <h1 class="text-3xl font-extrabold text-pink-600 text-center mb-6">
+                2. Vérification Oculaire Magique 🐭
+            </h1>
+            <div class="p-6 bg-pink-50 rounded-2xl border-2 border-pink-300 text-center shadow-inner">
+                <p class="text-lg text-gray-700 mb-4 font-semibold">
+                    Veuillez regarder la caméra pour confirmer votre identité (10 secondes).
+                </p>
+
+                <div class="relative w-full h-48 bg-gray-800 rounded-xl overflow-hidden shadow-xl mb-4">
+                    <!-- Le flux vidéo -->
+                    <video id="video-preview" autoplay playsinline muted 
+                        class="w-full h-full object-cover transform scale-x-[-1]" 
+                        style="display: ${isCameraActive ? 'block' : 'none'};"
+                    ></video>
+                    
+                    <!-- Placeholder/Message si la caméra n'est pas active -->
+                    ${!isCameraActive ? `
+                        <div class="flex items-center justify-center w-full h-full text-white text-center p-4">
+                            ${isCameraLoading ? `<div class="lds-dual-ring"></div>` : isCameraError ? 'CAMERA BLOQUÉE' : 'Appuyez pour autoriser l\'accès à la caméra.'}
+                        </div>
+                    ` : ''}
+
+                    <!-- Statut de détection en haut -->
+                    <div id="camera-status" class="absolute top-2 left-1/2 transform -translate-x-1/2 p-2 rounded-lg text-xs font-bold transition duration-300 
+                        ${eyeCheckValidated ? 'bg-green-600 text-white' : (isCameraActive ? 'bg-indigo-600 text-white' : 'bg-gray-900 text-white')}">
+                        ${cameraFeedbackText}
+                    </div>
+
+                </div>
+
+                <p class="text-sm text-gray-500 mt-2">
+                    ${eyeCheckValidated ? `Analyse Réussie ! ${userName} validé.` : (isCameraActive ? `Veuillez fixer l'écran pendant ${eyeCheckRemainingTime} secondes.` : cameraErrorMessage || 'Ceci est obligatoire pour la sécurité du bonus.')}
+                </p>
+            </div>
+
+            <button onclick="${buttonAction}" ${buttonDisabled ? 'disabled' : ''} class="w-full mt-8 py-3 text-white font-bold rounded-xl shadow-lg transition transform hover:scale-[1.01] ${buttonColor}">
+                ${buttonText}
+            </button>
+            <button onclick="stopCamera(); currentPage='login'; render()" class="w-full mt-3 py-2 bg-gray-200 text-gray-700 font-medium rounded-xl hover:bg-gray-300 transition">
+                Retour
+            </button>
+        `;
+    }
+    
+    function renderCodeDisplay() {
+        const code = transactionCode;
+        
+        function copyCode() {
+            navigator.clipboard.writeText(code).then(() => {
+                alertMessage("Code de transaction copié ! 📄", 'green');
+            }).catch(err => {
+                console.error('Erreur de copie:', err);
+                alertMessage("Erreur lors de la copie du code.", 'red');
+            });
+        }
+        
+        window.copyCode = copyCode;
+
+        return `
+            <h1 class="text-3xl font-extrabold text-pink-600 text-center mb-6">
+                3. Code de Transaction Magique 🖱️
+            </h1>
+            <div class="p-6 bg-yellow-50 rounded-2xl border-2 border-yellow-300 text-center shadow-inner">
+                <p class="text-lg text-gray-700 mb-3 font-semibold">
+                    Votre code secret pour la récompense :
+                </p>
+                <div class="text-4xl font-mono tracking-widest bg-white p-4 rounded-xl border-4 border-yellow-400 inline-block shadow-md mb-4">
+                    ${code}
+                </div>
+                <p class="text-sm text-gray-500 mb-4">
+                    (Notez-le bien ou copiez-le)
+                </p>
+                <button onclick="copyCode()" class="px-4 py-2 bg-yellow-500 text-white font-semibold rounded-full hover:bg-yellow-600 transition shadow">
+                    Copier le Code
+                </button>
+            </div>
+            
+            <button onclick="goToOptions()" class="w-full mt-8 py-3 bg-pink-500 text-white font-bold rounded-xl shadow-lg hover:bg-pink-600 transition transform hover:scale-[1.01]">
+                Choisir la Récompense
+            </button>
+        `;
+    }
+
+    function renderOptions() {
+        return `
+            <h1 class="text-3xl font-extrabold text-pink-600 text-center mb-6">
+                4. Comment voulez-vous votre récompense ?
+            </h1>
+            <p class="text-center text-gray-600 mb-8">
+                Choisissez entre la livraison directe ou le virement sécurisé.
+            </p>
+
+            <div class="space-y-4">
+                <div class="p-4 bg-pink-100 rounded-2xl border-2 border-pink-300 cursor-pointer hover:shadow-lg transition" onclick="handleChoice('delivery')">
+                    <h2 class="text-xl font-bold text-pink-700">🚚 Livraison Express (5 min)</h2>
+                    <p class="text-sm text-pink-600 mt-1">
+                        La Petite Souris livre la récompense dans votre boîte aux lettres ou boîte magique.
+                    </p>
+                    <p class="text-xs text-pink-500 mt-2 font-semibold">
+                        Récompense : ${RECOMPENSE_BASE} € + ${RECOMPENSE_BONUS} € **Bonus Plateforme**
+                    </p>
+                </div>
+                
+                <div class="p-4 bg-blue-100 rounded-2xl border-2 border-blue-300 cursor-pointer hover:shadow-lg transition" onclick="handleChoice('bank')">
+                    <h2 class="text-xl font-bold text-blue-700">🏦 Virement Bancaire Sécurisé</h2>
+                    <p class="text-sm text-blue-600 mt-1">
+                        Transfert immédiat sur le compte des parents (avec vérification de sécurité).
+                    </p>
+                    <p class="text-xs text-blue-500 mt-2 font-semibold">
+                        Récompense : ${RECOMPENSE_BASE} € + ${RECOMPENSE_BONUS} € **Bonus Plateforme**
+                    </p>
+                </div>
+            </div>
+
+            <button onclick="goToCode()" class="w-full mt-8 py-3 bg-gray-200 text-gray-700 font-medium rounded-xl hover:bg-gray-300 transition">
+                Retour
+            </button>
+        `;
+    }
+
+    function renderRecipientChoice() {
+        return `
+            <h1 class="text-3xl font-extrabold text-pink-600 text-center mb-6">
+                Qui reçoit l'argent ?
+            </h1>
+            <p class="text-center text-gray-600 mb-8">
+                Veuillez confirmer sur quel compte le virement sera effectué.
+            </p>
+
+            <div class="space-y-4">
+                <button onclick="handleRecipientChoice('mom')" class="w-full p-4 bg-pink-200 text-pink-800 font-bold rounded-xl shadow-md hover:bg-pink-300 transition transform hover:scale-[1.01]">
+                    Maman
+                </button>
+                
+                <button onclick="handleRecipientChoice('dad')" class="w-full p-4 bg-blue-200 text-blue-800 font-bold rounded-xl shadow-md hover:bg-blue-300 transition transform hover:scale-[1.01]">
+                    Papa
+                </button>
+            </div>
+            
+            <button onclick="currentPage='options'; render()" class="w-full mt-8 py-3 bg-gray-200 text-gray-700 font-medium rounded-xl hover:bg-gray-300 transition">
+                Retour au Choix
+            </button>
+        `;
+    }
+    
+    function renderInstructions() {
+        const isBank = userChoice.startsWith('bank');
+        const instructionTime = isBank ? TEMPS_ATTENTE_BANQUE_SECONDES : TEMPS_ATTENTE_LIVRAISON_SECONDES;
+        const recipientText = isBank ? (userChoice.endsWith('mom') ? 'la Maman' : 'le Papa') : 'la Petite Souris';
+        const instructionTitle = isBank ? 'Instructions pour le Virement Sécurisé' : 'Instructions pour la Livraison Express';
+
+        // CORRECTION: Mis à jour pour ne mentionner que la boîte aux lettres magique.
+        const deliveryInstructionText = `Placez le code et votre dent de lait dans votre boîte aux lettres ou votre boîte magique.`;
+        
+        return `
+            <h1 class="text-3xl font-extrabold text-pink-600 text-center mb-6">
+                5. ${instructionTitle}
+            </h1>
+            <div class="p-6 bg-green-50 rounded-2xl border-2 border-green-300 shadow-inner">
+                <p class="text-xl font-bold text-gray-700 mb-4">
+                    Pour finaliser votre récompense de **${RECOMPENSE_MONTANT} €** :
+                </p>
+                
+                <ul class="space-y-4 text-left text-gray-800">
+                    <li class="flex items-start">
+                        <span class="text-2xl mr-3 text-pink-500">1️⃣</span>
+                        <p>Écrivez le **Code de Transaction** (${transactionCode}) sur une petite feuille de papier (ou une enveloppe).</p>
+                    </li>
+                    <li class="flex items-start">
+                        <span class="text-2xl mr-3 text-pink-500">2️⃣</span>
+                        <p>${deliveryInstructionText}</p>
+                    </li>
+                    <li class="flex items-start">
+                        <span class="text-2xl mr-3 text-pink-500">3️⃣</span>
+                        <p>Cliquez sur "Commencer la Magie" ci-dessous. Le compte à rebours indique le temps de voyage de ${recipientText}.</p>
+                    </li>
+                </ul>
+            </div>
+
+            <button onclick="currentPage='activity'; startCountdown(${instructionTime}); render()" class="w-full mt-8 py-3 bg-pink-500 text-white font-bold rounded-xl shadow-lg hover:bg-pink-600 transition transform hover:scale-[1.01]">
+                Commencer la Magie ! ✨
+            </button>
+            
+            <button onclick="currentPage='options'; render()" class="w-full mt-3 py-2 bg-gray-200 text-gray-700 font-medium rounded-xl hover:bg-gray-300 transition">
+                Retour au Choix
+            </button>
+        `;
+    }
+
+    function renderActivity() {
+        const isBank = userChoice.startsWith('bank');
+        const durationText = isBank ? '10 minutes' : '5 minutes';
+        const title = isBank ? 'Vérification Magique du Transfert...' : 'Livraison Magique en cours...';
+        
+        const breakdown = `
+            <div class="text-center mt-3 text-lg font-bold text-pink-700 p-3 bg-pink-50 rounded-xl">
+                Bravo ! Vous avez gagné : ${RECOMPENSE_BASE} €
+                <span class="text-green-600 block text-sm font-semibold">
+                    + ${RECOMPENSE_BONUS} € BONUS PLATEFORME !
+                </span>
+                <span class="text-xl font-extrabold mt-1 block">
+                    Total : ${RECOMPENSE_MONTANT} € (Arrivée dans ${durationText})
+                </span>
+            </div>
+        `;
+        
+        // --- LOGIQUE BOUTON HISTOIRE PRINCIPAL (Play/Pause/Resume) ---
+        let playButtonIcon = isGenerating ? '<div class="lds-dual-ring ml-1"></div>' : (isAudioPlaying ? '⏸️' : '▶️');
+        let playButtonText;
+        if (isGenerating) {
+            playButtonText = 'Génération en cours...';
+        } else if (isAudioPlaying) {
+            playButtonText = 'Pause l\'histoire';
+        } else if (audioPlayer && audioPlayer.ended) {
+            playButtonText = 'Relire l\'histoire';
+        } else if (audioPlayer) {
+            playButtonText = 'Reprendre l\'histoire';
+        } else {
+            playButtonText = 'Lancer l\'histoire';
+        }
+
+        let playButtonColor = isGenerating ? 'bg-gray-400 cursor-not-allowed' : (isAudioPlaying ? 'bg-green-500 hover:bg-green-600' : 'bg-pink-500 hover:bg-pink-600');
+        let playButtonAction = isGenerating ? '' : 'toggleAudioPlayback()';
+
+        // --- LOGIQUE BOUTON NOUVELLE HISTOIRE (Regenerate) ---
+        // Le bouton est toujours actif sauf si une génération est déjà en cours
+        const regenerateButtonDisabled = isGenerating; 
+        const regenerateButtonColor = regenerateButtonDisabled ? 'bg-gray-400 cursor-not-allowed' : 'bg-purple-500 hover:bg-purple-600';
+
+
+        return `
+            <div class="text-center">
+                <h1 class="text-3xl font-extrabold text-pink-600 mb-4 animate-pulse">
+                    ${title}
+                </h1>
+                ${breakdown}
+
+                <p class="text-xl text-gray-700 my-4">
+                    Temps restant : <span id="countdown-time" class="font-bold text-blue-700">${formatTime(remainingTime)}</span>
+                </p>
+
+                <div class="p-4 bg-blue-50 border-4 border-blue-300 rounded-2xl mb-6">
+                    <h2 class="text-xl font-bold text-gray-800 mb-3">
+                        Occupez-vous pendant l'attente !
+                    </h2>
+                    
+                    <div class="flex flex-wrap justify-center space-x-2 space-y-2 mb-4">
+                        <button onclick="setSelectedGame('story')" class="px-4 py-2 text-sm rounded-full ${selectedGame === 'story' ? 'bg-blue-600 text-white shadow-md' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'} transition transform hover:scale-[1.05]">
+                            📖 Histoire Audio
+                        </button>
+                        <button onclick="setSelectedGame('calc')" class="px-4 py-2 text-sm rounded-full ${selectedGame === 'calc' ? 'bg-blue-600 text-white shadow-md' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'} transition transform hover:scale-[1.05]">
+                            💰 Le Trésor de la Souris
+                        </button>
+                        <button onclick="setSelectedGame('catch')" class="px-4 py-2 text-sm rounded-full ${selectedGame === 'catch' ? 'bg-blue-600 text-white shadow-md' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'} transition transform hover:scale-[1.05]">
+                            🦷 Jeu d'Attrape-Dent
+                        </button>
+                    </div>
+
+                    <!-- BOUTONS D'HISTOIRE (Affichés uniquement si l'histoire est sélectionnée) -->
+                    ${selectedGame === 'story' ? `
+                    <div class="flex flex-wrap justify-center space-x-2 mb-4">
+                        <button
+                            onclick="${playButtonAction}"
+                            ${isGenerating ? 'disabled' : ''}
+                            class="flex items-center justify-center px-4 py-2 text-sm rounded-full text-white font-semibold transition transform hover:scale-[1.05] ${playButtonColor}"
+                        >
+                            <span class="mr-1">${playButtonIcon}</span>
+                            <span>${playButtonText}</span>
+                        </button>
+
+                        <button
+                            onclick="requestNewStory()"
+                            ${regenerateButtonDisabled ? 'disabled' : ''}
+                            class="flex items-center justify-center px-4 py-2 text-sm rounded-full text-white font-semibold transition transform hover:scale-[1.05] ${regenerateButtonColor}"
+                        >
+                            <span class="mr-1">📚</span>
+                            <span>Nouvelle Histoire</span>
+                        </button>
+                    </div>` : ''}
+
+
+                    <!-- Contenu du jeu actif -->
+                    <div id="game-area-content" class="w-full p-2 bg-gray-100 rounded-xl shadow-lg min-h-[350px] flex items-center justify-center">
+                        <p class="text-gray-500 italic">Sélectionnez une activité...</p>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderResult() {
+        const choice = userChoice;
+        let title = '';
+        let message = '';
+        let bgColor = '';
+
+        if (choice === 'delivery') {
+            title = "Livraison Magique Réussie !";
+            message = `💌 Le courrier de la Petite Souris est arrivé ! Votre récompense totale de **${RECOMPENSE_MONTANT} €** est là. Cherchez la nouvelle enveloppe !`;
+            bgColor = 'bg-pink-100 border-pink-500';
+        } else if (choice.startsWith('bank')) {
+            const recipient = choice.endsWith('mom') ? 'Maman' : 'Papa';
+            title = "Virement Bancaire Validé !";
+            message = `🎉 Le transfert total de **${RECOMPENSE_MONTANT} €** est terminé et est sur le compte de ${recipient}. Félicitations pour votre nouvelle dent !`;
+            bgColor = 'bg-yellow-100 border-yellow-500';
+        }
+        
+        // Arrêter l'activité avant de passer à la page de résultat
+        stopActiveGame();
+        // Arrêter l'audio si on quitte la page
+        if (audioPlayer && isAudioPlaying) {
+             audioPlayer.pause();
+        }
+
+        return `
+            <div class="text-center">
+                <h1 class="text-4xl font-extrabold text-pink-600 mb-4">
+                    ${title}
+                </h1>
+                <div class="p-6 mt-8 rounded-2xl border-4 ${bgColor} shadow-lg">
+                    <p class="text-lg text-gray-700">${message.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')}</p>
+                </div>
+                <button onclick="currentPage='login'; render()" class="w-full mt-8 py-3 bg-pink-500 text-white font-bold rounded-xl shadow-lg hover:bg-pink-600 transition transform hover:scale-[1.01]">
+                    Retour au Portail
+                </button>
+            </div>
+        `;
+    }
+    
+    // --- Fonction de Rendu Principale ---
+
+    function render() {
+        appElement.style.opacity = 0; 
+        setTimeout(() => {
+            let content = '';
+            
+            // Arrêter la boucle du jeu d'attrape-dent si on change de page
+            if (currentPage !== 'activity') {
+                stopActiveGame();
+            }
+            
+            switch (currentPage) {
+                case 'login':
+                    content = renderLogin();
+                    break;
+                case 'eye_check':
+                    content = renderEyeCheck();
+                    break;
+                case 'code':
+                    content = renderCodeDisplay();
+                    break;
+                case 'options':
+                    content = renderOptions();
+                    break;
+                case 'recipient_choice':
+                    content = renderRecipientChoice();
+                    break;
+                case 'instructions':
+                    content = renderInstructions();
+                    break;
+                case 'activity':
+                    content = renderActivity();
+                    break;
+                case 'result':
+                    content = renderResult();
+                    break;
+                default:
+                    content = renderLogin();
+            }
+            appElement.innerHTML = content;
+            appElement.style.opacity = 1; 
+            
+            // CORRECTION: Appeler renderGameArea uniquement après que le HTML de 'activity' est dans le DOM
+            if (currentPage === 'activity') {
+                // Si selectedGame est 'story' et qu'il n'y a pas d'audio, on met le texte initial
+                if (selectedGame === 'story' && !audioPlayer) {
+                    generatedStory = "Appuyez sur le bouton pour découvrir une longue et douce histoire de la Petite Souris !";
+                }
+                renderGameArea(); 
+            } else if (currentPage === 'eye_check' && cameraStatus === 'ACTIVE') {
+                 const videoEl = document.getElementById('video-preview');
+                 if(videoEl && videoStream) {
+                    videoEl.srcObject = videoStream;
+                    videoEl.play();
+                    videoEl.style.display = 'block';
+                 }
+            }
+        }, 100);
+    }
+
+    // Lancement de l'application au chargement de la fenêtre
+    window.onload = function() {
+        // Rendre les fonctions globales
+        window.handleLogin = handleLogin;
+        window.startEyeCheckProcess = startEyeCheckProcess;
+        window.stopCamera = stopCamera; 
+        window.goToCode = goToCode;
+        window.goToOptions = goToOptions;
+        window.handleChoice = handleChoice;
+        window.handleRecipientChoice = handleRecipientChoice;
+        window.toggleAudioPlayback = toggleAudioPlayback; 
+        window.setSelectedGame = setSelectedGame; 
+        window.requestNewStory = requestNewStory; 
+        
+        // Rendre les fonctions de jeu globales
+        window.handleCalcInput = handleCalcInput;
+        
+        render();
+
+        // Polyfill pour le presse-papiers pour l'iframe
+        if (typeof navigator.clipboard === 'undefined') {
+            window.navigator.clipboard = {
+                writeText: (text) => {
+                    const tempInput = document.createElement('textarea');
+                    tempInput.value = text;
+                    document.body.appendChild(tempInput);
+                    tempInput.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(tempInput);
+                    return Promise.resolve();
+                }
+            };
+        }
+    };
+</script>
+</body>
+</html>
