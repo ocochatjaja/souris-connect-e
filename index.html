@@ -74,6 +74,11 @@
 <div id="alert-box" class="fixed bottom-4 right-4 p-3 rounded-xl text-sm font-medium transition-all duration-500 opacity-0 transform translate-y-2 z-50"></div>
 
 <script>
+    // 🔑 CONFIGURATION DE LA CLÉ API GEMINI (À VÉRIFIER EN CAS D'ERREUR) 🔑
+    // Si vous obtenez une erreur de connexion sur l'histoire, cela signifie que cette clé n'est plus valide.
+    // Vous devez obtenir une nouvelle clé sur la console Google AI Studio.
+    const GEMINI_API_KEY = "AIzaSyBxYegmoC88aykxvDVe96dbnJdMJcMwK4Eb"; 
+    
     // --- Configuration Magique ---
     const RECOMPENSE_MONTANT = 10;
     const RECOMPENSE_BASE = 5;
@@ -91,11 +96,8 @@
     const TTS_API_MODEL = "gemini-2.5-flash-preview-tts";
     const TTS_VOICE = "Achird"; // Voix douce et amicale (Achird est 'Friendly')
 
-    // 🔑 CLÉ API IMPORTANTE : 
-    // Votre clé API fournie a été insérée ici. Cela résoudra l'erreur de connexion sur Netlify !
-    const apiKey = "AIzaSyBxYegmoC88aykxvDVe96dbnJdMJcMwK4Eb"; 
     
-    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${GEMINI_API_KEY}`;
 
     // --- Variables d'État de l'Application ---
     let currentPage = 'login'; 
@@ -365,9 +367,10 @@
                     const errorText = await response.text();
                     console.error(`API Call Failed (Status: ${response.status}, Attempt: ${attempt + 1}): ${errorText}`);
                     
-                    // Si le statut est une erreur client ou serveur définitive, on ne réessaye pas
+                    // Si le statut est une erreur client (4xx), c'est souvent la clé API qui est en cause
                     if (response.status >= 400 && response.status < 500) {
-                        throw new Error("Erreur d'authentification ou requête invalide. Vérifiez la clé API.");
+                        // Erreur explicite pour le débogage de la clé
+                        throw new Error("Erreur d'authentification (Code 4xx). Votre clé API n'est peut-être pas valide ou a des restrictions.");
                     }
                     if (response.status >= 500 && response.status < 600) {
                         throw new Error(`Erreur serveur! status: ${response.status}`);
@@ -409,8 +412,8 @@
             return result.candidates?.[0]?.content?.parts?.[0]?.text || "Oups ! La magie a eu un petit hoquet lors de la rédaction du script. Veuillez réessayer.";
         } catch (error) {
             console.error("Gemini Story Generation Error:", error);
-            if (error.message.includes("Vérifiez la clé API")) {
-                 return "Erreur de connexion magique : Le portail est fermé. (Veuillez vérifier votre Clé API !)";
+            if (error.message.includes("Erreur d'authentification")) {
+                 return "Erreur de connexion magique : Le portail est fermé. (Veuillez vérifier que votre Clé API est valide et a les bons droits !)";
             }
             return "Erreur de connexion magique. Le ciel est brumeux. Réessayez !";
         }
@@ -419,10 +422,10 @@
     async function getAndNarrateStory() {
         if (isGenerating) return;
         
-        // Vérification de la clé API avant de commencer (moins critique maintenant qu'elle est codée en dur, mais bonne pratique)
-        if (apiKey === "" || apiKey === "VOTRE_CLE_API_GEMINI_ICI") {
-             alertMessage("Erreur: Clé API manquante ou non valide. Veuillez la renseigner dans le code source.", 'red');
-             console.error("Clé API manquante. La génération d'histoire ne fonctionnera pas en dehors de l'environnement Canvas.");
+        // Vérification de base de la clé API
+        if (GEMINI_API_KEY === "" || GEMINI_API_KEY === "VOTRE_CLE_API_GEMINI_ICI") {
+             alertMessage("Erreur: Clé API manquante. L'histoire ne peut être générée.", 'red');
+             console.error("Clé API manquante ou non remplie.");
              return;
         }
 
@@ -467,7 +470,7 @@
             model: TTS_API_MODEL
         };
         
-        const ttsApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${TTS_API_MODEL}:generateContent?key=${apiKey}`;
+        const ttsApiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${TTS_API_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
 
         try {
             const response = await fetchWithBackoff(ttsApiUrl, {
@@ -515,7 +518,11 @@
 
         } catch (error) {
             console.error("Gemini TTS Error:", error);
-            alertMessage("Erreur de connexion magique pour l'audio. Réessayez !", 'red');
+            if (error.message.includes("Erreur d'authentification")) {
+                alertMessage("Erreur d'authentification TTS. Vérifiez la validité de la clé API.", 'red');
+            } else {
+                alertMessage("Erreur de connexion magique pour l'audio. Réessayez !", 'red');
+            }
             generatedStory = textScript; // Le texte final est affiché
         } finally {
             isGenerating = false;
@@ -733,7 +740,7 @@
                 currentInput += value;
             }
             
-            // --- NOUVELLE LOGIQUE D'AUTO-VALIDATION (selon demande de Jalil) ---
+            // --- LOGIQUE D'AUTO-VALIDATION ---
             const input = parseInt(currentInput, 10);
             if (!isNaN(input) && input === correctAnswer) {
                 checkAnswer(); // Auto-valide si l'entrée correspond à la réponse exacte
